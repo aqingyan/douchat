@@ -17,6 +17,7 @@ class ApiBaseController extends Controller {
 	public $addon;					// 当前请求的插件
 	public $version;				// 当前请求的接口版本
 	public $openid;					// 当前请求的用户openid
+	public $sessionKey;				// 当前登录用户sessionKey
 	public $headers;				// 当前请求头
     public $controller;             // 当前控制器
     public $action;                 // 当前方法
@@ -34,6 +35,7 @@ class ApiBaseController extends Controller {
 		$this->mp_info = get_mp_info($this->mpid);
 		$this->addon = get_addon();
 		$this->openid = '';
+		$this->sessionKey = '';
 		if (isset($this->headers['version']) && !empty($this->headers['version'])) {
 			$this->version = $headers['version'];
 		}
@@ -100,6 +102,7 @@ class ApiBaseController extends Controller {
 			$cache = S($user_token);
 			if (!empty($cache) && !empty($cache['openid']) && !empty($cache['session_key'])) {
 				$this->openid = $cache['openid'];
+				$this->sessionKey = $cache['session_key'];
 				$access = true;
 			}
 		}
@@ -180,6 +183,53 @@ class ApiBaseController extends Controller {
 				$this->response(0, '登录成功', [
 					'user_token' => $user_token,
 				]);
+			}
+		} catch (\Exception $e) {
+			$this->response(1001, $e->getMessage());
+		}
+	}
+	
+	/**
+	 * 设置手机号
+	 */
+	public function setPhone() {
+		$this->checkPost();
+		$this->checkLogin();
+		try {
+			$post = I('post.');
+			if (empty($post['encryptedData']) || empty($post['iv'])) {
+				$this->response(1001, '参数encryptedData、iv必传');
+			}
+			$mp_info = $this->mp_info;
+			$appid = $mp_info['appid'];
+			$join_type = $mp_info['join_type'];
+			if ($join_type == 2) {		// 授权接入
+			
+			} else {		// 手动接入
+				$fansInfo = D('MpFans')->where([
+					'mpid' => $this->mpid,
+					'openid' => $this->openid
+				])->find();
+				if (empty($fansInfo)) {
+					$this->response(1001, '用户信息不存在，请先授权登录');
+				}
+				$decodeData = [];
+				
+				$crypt = new WXBizDataCrypt($appid, $this->sessionKey);
+				$errCode = $crypt->decryptData($post['encryptedData'], $post['iv'], $decodeData);
+				if ($errCode == 0) {
+					$decodeData = json_decode($decodeData, true);
+					if (is_array($decodeData) && count($decodeData) > 0) {
+						D('MpFans')->where([
+							'openid' => $this->openid
+						])->save([
+							'mobile' => $decodeData['purePhoneNumber']
+						]);
+						$this->response(0, '设置手机号成功');
+					}
+				}
+				
+				$this->response(1001, '设置手机号失败');
 			}
 		} catch (\Exception $e) {
 			$this->response(1001, $e->getMessage());
@@ -339,6 +389,58 @@ class ApiBaseController extends Controller {
 			$this->response(0, '获取成功', $settings);
 		} catch (\Exception $e) {
 			$this->response(1001, $e->getMessage());
+		}
+	}
+	
+	// 获取支付参数
+	public function getPayParams() {
+		try {
+			$tradeType = I('trade_type', 'JSAPI');
+			$tradeType = strtoupper($tradeType);
+			if (!in_array($tradeType, ['JSAPI','NATIVE','APP'])) {
+				$this->response(1001, '支付类型不正确');
+			}
+			$fee = I('fee', 0, 'floatval');
+			if ($fee <= 0) {
+				$this->response(1001, '支付金额不正确');
+			}
+			$orderid = I('orderid', '');
+			if (empty($orderid)) {
+				$this->response(1001, '订单号必须');
+			}
+			$notify = I('notify', '');
+			if (empty($notify)) {
+				$this->response(1001, '支付成功异步通知地址必须');
+			}
+			$openid = I('openid', '');
+			$product_id = I('product_id', '');
+			if ($tradeType == 'JSAPI') {		// 网页支付
+				if (empty($openid)) {
+					$this->checkLogin();
+					$openid = $this->openid;
+				}
+			} elseif ($tradeType == 'NATIVE') {		// 扫码支付
+				if (empty($product_id)) {
+					$this->response(1001, '参数product_id必须');
+				}
+			}
+			$body = I('body', $orderid);
+			$payParams = get_jsapi_parameters([
+				'mpid' => $this->mpid,
+				'openid' => $openid,
+				'product_id' => $product_id,
+				'price' => $fee,
+				'orderid' => $orderid,
+				'trade_type' => $tradeType,
+				'body' => $body,
+				'notify' => $notify
+			]);
+			if (!is_array($payParams)) {
+				$payParams = json_decode($payParams,true);
+			}
+			$this->response(0, '获取成功', $payParams);
+		} catch (\Exception $e) {
+			$this->response(1001, '获取支付参数失败');
 		}
 	}
 	
